@@ -208,11 +208,17 @@ where
                     .iter()
                     .map(|&c| if c < self.orig_cols { Some(c) } else { None })
                     .collect(),
-                self.in_col[..self.orig_cols].iter().map(|&c| Some(c)).collect(),
+                self.in_col[..self.orig_cols]
+                    .iter()
+                    .map(|&c| Some(c))
+                    .collect(),
             ));
         } else if self.orig_rows < self.dim {
             return Ok((
-                self.in_row[..self.orig_rows].iter().map(|&c| Some(c)).collect(),
+                self.in_row[..self.orig_rows]
+                    .iter()
+                    .map(|&c| Some(c))
+                    .collect(),
                 self.in_col
                     .iter()
                     .map(|&r| if r < self.orig_rows { Some(r) } else { None })
@@ -576,7 +582,23 @@ mod tests {
         let cost = cost(m.view(), &result.0);
         assert_eq!(cost, 0.5);
         assert_eq!(result.0, all_some(vec![6, 7, 11, 5, 9, 8, 2]));
-        assert_eq!(result.1, vec![None, None, Some(6), None, None, Some(3), Some(0), Some(1), Some(5), Some(4), None, Some(2)]);
+        assert_eq!(
+            result.1,
+            vec![
+                None,
+                None,
+                Some(6),
+                None,
+                None,
+                Some(3),
+                Some(0),
+                Some(1),
+                Some(5),
+                Some(4),
+                None,
+                Some(2)
+            ]
+        );
     }
 
     #[test]
@@ -584,8 +606,35 @@ mod tests {
         let (m, result) = solve_rect_12_7();
         let cost = cost(m.view(), &result.0);
         assert_eq!(cost, 0.7);
-        assert_eq!(result.0, vec![Some(2), None, Some(0), None, None, Some(3), None, Some(6), Some(1), Some(5), Some(4), None]);
-        assert_eq!(result.1, vec![Some(2), Some(8), Some(0), Some(5), Some(10), Some(9), Some(7)]);
+        assert_eq!(
+            result.0,
+            vec![
+                Some(2),
+                None,
+                Some(0),
+                None,
+                None,
+                Some(3),
+                None,
+                Some(6),
+                Some(1),
+                Some(5),
+                Some(4),
+                None
+            ]
+        );
+        assert_eq!(
+            result.1,
+            vec![
+                Some(2),
+                Some(8),
+                Some(0),
+                Some(5),
+                Some(10),
+                Some(9),
+                Some(7)
+            ]
+        );
     }
 
     #[test]
@@ -768,7 +817,6 @@ mod tests {
         result.unwrap();
     }
 
-
     fn solve_rect_7_12() -> (
         ndarray::Array2<f64>,
         (Vec<Option<usize>>, Vec<Option<usize>>),
@@ -785,7 +833,6 @@ mod tests {
         (m, result)
     }
 
-    
     fn solve_rect_12_7() -> (
         ndarray::Array2<f64>,
         (Vec<Option<usize>>, Vec<Option<usize>>),
