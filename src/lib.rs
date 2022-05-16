@@ -110,7 +110,7 @@ fn extend_to_square<'a, T: LapJVCost>(
 
     // non-square cost matrix, extend to square
     let max_cost = costs.fold(
-        costs[(0, 0)],
+        T::min_value(),
         |cur_max, val| {
             if *val > cur_max {
                 *val
@@ -582,6 +582,22 @@ mod tests {
         let cost = cost(m.view(), &result.0);
         assert_eq!(cost, 1071.0);
         assert_eq!(result.0, vec![7, 9, 3, 4, 1, 0, 5, 6, 2, 8]);
+    }
+
+    #[test]
+    fn test_solve_empty() {
+        let cost = ndarray::Array2::<f32>::zeros((0,0));
+        let result = lapjv(cost.view()).unwrap();
+        assert_eq!(result.0, vec![]);
+        assert_eq!(result.1, vec![]);
+    }
+
+    #[test]
+    fn test_solve_half_empty() {
+        let cost = ndarray::Array2::<f32>::zeros((5,0));
+        let result = lapjv_rect(cost.view()).unwrap();
+        assert_eq!(result.0, vec![None, None, None, None, None]);
+        assert_eq!(result.1, vec![]);
     }
 
     #[test]
