@@ -49,10 +49,8 @@ impl std::fmt::Display for LapJVError {
 impl std::error::Error for LapJVError {}
 
 pub struct LapJV<'a, T: 'a> {
-    costs: ndarray::CowArray<'a, T, ndarray::Ix2>,
+    costs: ndarray::ArrayView2<'a, T>,
     dim: usize,
-    orig_rows: usize,
-    orig_cols: usize,
     free_rows: Vec<usize>,
     v: Vec<T>,
     in_col: Vec<usize>,
@@ -67,15 +65,92 @@ pub struct LapJV<'a, T: 'a> {
 /// (1987)
 pub fn lapjv<T>(
     costs: ndarray::ArrayView2<T>,
-) -> Result<(Vec<Option<usize>>, Vec<Option<usize>>), LapJVError>
+) -> Result<(Vec<usize>, Vec<usize>), LapJVError>
 where
     T: LapJVCost,
 {
     LapJV::new(costs).solve()
 }
 
+
+/// Solve LAP problem given possibly rectangular cost matrix
+/// This is an implementation of the LAPJV algorithm described in:
+/// R. Jonker, A. Volgenant. A Shortest Augmenting Path Algorithm for
+/// Dense and Sparse Linear Assignment Problems. Computing 38, 325-340
+/// (1987)
+pub fn lapjv_rect<T>(
+    costs: ndarray::ArrayView2<T>,
+) -> Result<(Vec<Option<usize>>, Vec<Option<usize>>), LapJVError>
+where
+    T: LapJVCost,
+{
+    let (orig_rows, orig_cols) = costs.dim();
+    let square_costs = extend_to_square(costs);
+    let (in_row, in_col) = LapJV::new(square_costs.view()).solve()?;
+
+    Ok((
+        in_row[..orig_rows]
+            .iter()
+            .map(|&c| if c < orig_cols { Some(c) } else { None })
+            .collect(),
+        in_col[..orig_cols]
+            .iter()
+            .map(|&r| if r < orig_rows { Some(r) } else { None })
+            .collect(),
+    ))
+}
+
+fn extend_to_square<'a, T: LapJVCost>(
+    costs: ndarray::ArrayView2<'a, T>,
+) -> ndarray::CowArray<'a, T, ndarray::Ix2> {
+    let (rows, cols) = costs.dim(); // cost matrix dimensions
+    if rows == cols {
+        return costs.into();
+    }
+
+    // non-square cost matrix, extend to square
+    let max_cost = costs.fold(
+        costs[(0, 0)],
+        |cur_max, val| {
+            if *val > cur_max {
+                *val
+            } else {
+                *val
+            }
+        },
+    );
+    if rows > cols {
+        return ndarray::concatenate![
+            ndarray::Axis(1),
+            costs.view(),
+            ndarray::Array2::from_elem((rows, rows - cols), max_cost + T::one())
+        ]
+        .into();
+    } else {
+        return ndarray::concatenate![
+            ndarray::Axis(0),
+            costs.view(),
+            ndarray::Array2::from_elem((cols - rows, cols), max_cost + T::one())
+        ]
+        .into();
+    }
+}
+
 /// Calculate solution cost by a result row
-pub fn cost<T>(input: ndarray::ArrayView2<T>, row: &[Option<usize>]) -> T
+pub fn cost<T>(input: ndarray::ArrayView2<T>, row: &[usize]) -> T
+where
+    T: LapJVCost,
+{
+    row.iter()
+        .enumerate()
+        .fold(T::zero(), |acc, (row, &col)| {
+            acc + input[(row, col)]
+        })
+}
+
+/// Calculate solution cost by a result row for a rectangular cost matrix
+/// i.e. where not every row/col has an assignment
+pub fn cost_rect<T>(input: ndarray::ArrayView2<T>, row: &[Option<usize>]) -> T
 where
     T: LapJVCost,
 {
@@ -112,60 +187,20 @@ where
     T: LapJVCost,
 {
     pub fn new(costs: ndarray::ArrayView2<'a, T>) -> Self {
-        let (orig_rows, orig_cols) = costs.dim(); // cost matrix dimensions
-        let square_costs = Self::extend_to_square(costs);
-        let dim = square_costs.shape()[0];
+        let dim = costs.shape()[0];
         let free_rows = Vec::with_capacity(dim); // list of unassigned rows.
         let v = Vec::with_capacity(dim);
         let in_row = vec![0; dim];
         let in_col = Vec::with_capacity(dim);
         let cancellation = Cancellation(Default::default());
         Self {
-            costs: square_costs,
+            costs,
             dim,
-            orig_rows,
-            orig_cols,
             free_rows,
             v,
             in_col,
             in_row,
             cancellation,
-        }
-    }
-
-    fn extend_to_square(
-        costs: ndarray::ArrayView2<'a, T>,
-    ) -> ndarray::CowArray<'a, T, ndarray::Ix2> {
-        let (rows, cols) = costs.dim(); // cost matrix dimensions
-        if rows == cols {
-            return costs.into();
-        }
-
-        // non-square cost matrix, extend to square
-        let max_cost = costs.fold(
-            costs[(0, 0)],
-            |cur_max, val| {
-                if *val > cur_max {
-                    *val
-                } else {
-                    *val
-                }
-            },
-        );
-        if rows > cols {
-            return ndarray::concatenate![
-                ndarray::Axis(1),
-                costs.view(),
-                ndarray::Array2::from_elem((rows, rows - cols), max_cost + T::one())
-            ]
-            .into();
-        } else {
-            return ndarray::concatenate![
-                ndarray::Axis(0),
-                costs.view(),
-                ndarray::Array2::from_elem((cols - rows, cols), max_cost + T::one())
-            ]
-            .into();
         }
     }
 
@@ -183,7 +218,7 @@ where
         Ok(())
     }
 
-    pub fn solve(mut self) -> Result<(Vec<Option<usize>>, Vec<Option<usize>>), LapJVError> {
+    pub fn solve(mut self) -> Result<(Vec<usize>, Vec<usize>), LapJVError> {
         if self.costs.dim().0 != self.costs.dim().1 {
             return Err(LapJVError {
                 kind: ErrorKind::Msg("Input error: matrix is not square"),
@@ -202,34 +237,7 @@ where
             self.ca_dense()?;
         }
 
-        if self.orig_cols < self.dim {
-            return Ok((
-                self.in_row
-                    .iter()
-                    .map(|&c| if c < self.orig_cols { Some(c) } else { None })
-                    .collect(),
-                self.in_col[..self.orig_cols]
-                    .iter()
-                    .map(|&c| Some(c))
-                    .collect(),
-            ));
-        } else if self.orig_rows < self.dim {
-            return Ok((
-                self.in_row[..self.orig_rows]
-                    .iter()
-                    .map(|&c| Some(c))
-                    .collect(),
-                self.in_col
-                    .iter()
-                    .map(|&r| if r < self.orig_rows { Some(r) } else { None })
-                    .collect(),
-            ));
-        }
-
-        Ok((
-            self.in_row.iter().map(|&r| Some(r)).collect(),
-            self.in_col.iter().map(|&c| Some(c)).collect(),
-        ))
+        Ok((self.in_row, self.in_col))
     }
 
     // Column-reduction and reduction transfer for a dense cost matrix
@@ -545,8 +553,8 @@ mod tests {
         )
         .unwrap();
         let result = lapjv(m.view()).unwrap();
-        assert_eq!(result.0, all_some(vec![2, 0, 1]));
-        assert_eq!(result.1, all_some(vec![1, 2, 0]));
+        assert_eq!(result.0, vec![2, 0, 1]);
+        assert_eq!(result.1, vec![1, 2, 0]);
     }
 
     #[test]
@@ -573,13 +581,13 @@ mod tests {
         let (m, result) = solve_random10();
         let cost = cost(m.view(), &result.0);
         assert_eq!(cost, 1071.0);
-        assert_eq!(result.0, all_some(vec![7, 9, 3, 4, 1, 0, 5, 6, 2, 8]));
+        assert_eq!(result.0, vec![7, 9, 3, 4, 1, 0, 5, 6, 2, 8]);
     }
 
     #[test]
     fn test_solve_7_12() {
         let (m, result) = solve_rect_7_12();
-        let cost = cost(m.view(), &result.0);
+        let cost = cost_rect(m.view(), &result.0);
         assert_eq!(cost, 0.5);
         assert_eq!(result.0, all_some(vec![6, 7, 11, 5, 9, 8, 2]));
         assert_eq!(
@@ -604,7 +612,7 @@ mod tests {
     #[test]
     fn test_solve_12_7() {
         let (m, result) = solve_rect_12_7();
-        let cost = cost(m.view(), &result.0);
+        let cost = cost_rect(m.view(), &result.0);
         assert_eq!(cost, 0.7);
         assert_eq!(
             result.0,
@@ -625,15 +633,7 @@ mod tests {
         );
         assert_eq!(
             result.1,
-            vec![
-                Some(2),
-                Some(8),
-                Some(0),
-                Some(5),
-                Some(10),
-                Some(9),
-                Some(7)
-            ]
+            all_some(vec![2, 8, 0, 5, 10, 9, 7])
         );
     }
 
@@ -745,7 +745,7 @@ mod tests {
         let result = lapjv(m.view()).unwrap();
         let cost = cost(m.view(), &result.0);
         assert_eq!(cost, 1403.0);
-        assert_eq!(result.0, all_some(vec![7, 9, 3, 8, 1, 4, 5, 6, 2, 0]));
+        assert_eq!(result.0, vec![7, 9, 3, 8, 1, 4, 5, 6, 2, 0]);
     }
 
     #[test]
@@ -773,7 +773,7 @@ mod tests {
 
     fn solve_random10() -> (
         ndarray::Array2<f64>,
-        (Vec<Option<usize>>, Vec<Option<usize>>),
+        (Vec<usize>, Vec<usize>),
     ) {
         const N: usize = 10;
         let c = vec![
@@ -829,7 +829,7 @@ mod tests {
             0.1, 0.3, 0.6, 0.2, 0.3, 0.9, 0.1, 0.6, 0.7, 0.6, 0.8, 0.8, 0.6, 0.2, 0.9, 0.5,
         ];
         let m = ndarray::Array2::from_shape_vec((7, 12), c).unwrap();
-        let result = lapjv(m.view()).unwrap();
+        let result = lapjv_rect(m.view()).unwrap();
         (m, result)
     }
 
@@ -845,7 +845,7 @@ mod tests {
             0.1, 0.3, 0.6, 0.2, 0.3, 0.9, 0.1, 0.6, 0.7, 0.6, 0.8, 0.8, 0.6, 0.2, 0.9, 0.5,
         ];
         let m = ndarray::Array2::from_shape_vec((12, 7), c).unwrap();
-        let result = lapjv(m.view()).unwrap();
+        let result = lapjv_rect(m.view()).unwrap();
         (m, result)
     }
 
